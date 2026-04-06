@@ -5,3 +5,7 @@ curl -L https://raw.githubusercontent.com/tyhao-hty/sh/main/PVE-exporter.sh -o P
 chmod +X PVE-exporter.sh
 ./PVE-exporter.sh
 ```
+推荐的PVE面板
+```
+https://grafana.com/grafana/dashboards/10347-proxmox-via-prometheus/
+```
