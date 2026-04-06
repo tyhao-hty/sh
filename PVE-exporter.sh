@@ -117,16 +117,16 @@ maybe_create_pve_user() {
     return
   fi
 
-  if pveum user list | awk '{print $1}' | grep -qx "${PVE_USER}"; then
-    warn "PVE 用户已存在：${PVE_USER}"
+  if pveum user list | awk 'NR>1 {print $1}' | grep -Fxq "${PVE_USER}"; then
+    warn "PVE 用户已存在：${PVE_USER}，跳过创建。"
   else
     log "创建 PVE 用户：${PVE_USER}"
     pveum user add "${PVE_USER}" --password "${PVE_PASSWORD}"
     log "PVE 用户已创建。"
   fi
 
-  if pveum acl list | grep -qE "^/ +${PVE_USER} +${PVE_ROLE}\$"; then
-    warn "用户 ${PVE_USER} 已拥有 / 路径上的 ${PVE_ROLE} 权限。"
+  if pveum acl list | awk 'NR>1 {print $1, $2, $3}' | grep -Fq "/ ${PVE_USER} ${PVE_ROLE}"; then
+    warn "用户 ${PVE_USER} 已拥有 / 路径上的 ${PVE_ROLE} 权限，跳过授权。"
   else
     log "授予 ${PVE_USER} 只读角色：${PVE_ROLE}"
     pveum aclmod / -user "${PVE_USER}" -role "${PVE_ROLE}"
@@ -134,10 +134,10 @@ maybe_create_pve_user() {
   fi
 
   log "当前用户信息："
-  pveum user list | grep "${PVE_USER}" || true
+  pveum user list | grep -F "${PVE_USER}" || true
 
   log "当前 ACL 条目："
-  pveum acl list | grep "${PVE_USER}" || true
+  pveum acl list | grep -F "${PVE_USER}" || true
 }
 
 write_config() {
@@ -184,8 +184,7 @@ reload_and_start_service() {
   step "重载 systemd 并启动服务"
 
   systemctl daemon-reload
-  systemctl enable "${APP_NAME}" >/dev/null 2>&1 || true
-  systemctl restart "${APP_NAME}"
+  systemctl enable --now "${APP_NAME}"
 
   sleep 2
 
