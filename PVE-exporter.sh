@@ -58,7 +58,6 @@ check_os() {
     log "检测到 Proxmox VE 环境：$(pveversion | head -n 1)"
   else
     warn "未检测到 pveversion，当前主机可能不是 PVE 节点。"
-    warn "如果这台机器不是 PVE 宿主机，那么创建 PVE 用户/权限那一步需要你在真正的 PVE 平台上完成。"
   fi
 
   if ! command -v systemctl >/dev/null 2>&1; then
@@ -104,7 +103,6 @@ verify_binary() {
 
   "${VENV_DIR}/bin/pve_exporter" --help >/dev/null
   log "pve_exporter 可执行检查通过。"
-
   log "版本/帮助信息预检完成。"
 }
 
@@ -181,7 +179,7 @@ EOF
 }
 
 reload_and_start_service() {
-  step "重载 systemd 并启动服务"
+  step "重载 systemd 并设置开机自启"
 
   systemctl daemon-reload
   systemctl enable --now "${APP_NAME}"
@@ -189,7 +187,7 @@ reload_and_start_service() {
   sleep 2
 
   if systemctl is-active --quiet "${APP_NAME}"; then
-    log "服务已成功启动：${APP_NAME}"
+    log "服务已成功启动，且已设置为开机自启：${APP_NAME}"
   else
     err "服务未成功启动。"
     systemctl status "${APP_NAME}" --no-pager -l || true
@@ -205,26 +203,19 @@ post_checks() {
   systemctl status "${APP_NAME}" --no-pager -l || true
 
   echo
-  echo "----- 监听端口检查（若系统安装了 ss）-----"
+  echo "----- 开机自启状态 -----"
+  systemctl is-enabled "${APP_NAME}" || true
+
+  echo
+  echo "----- 监听端口检查 -----"
   if command -v ss >/dev/null 2>&1; then
     ss -lntp | grep -E 'pve_exporter|:9221' || warn "未明确看到 9221 监听，请结合日志判断。"
   fi
 
   echo
-  echo "----- 访问建议 -----"
-  echo "你现在可以在本机尝试："
+  echo "----- 指标测试建议 -----"
+  echo "本机测试："
   echo "  curl http://127.0.0.1:9221/metrics | head"
-  echo
-  echo "如果失败，请查看："
-  echo "  journalctl -u ${APP_NAME} -n 100 --no-pager"
-  echo
-  echo "Prometheus 抓取配置示例："
-  cat <<EOF
-scrape_configs:
-  - job_name: 'pve'
-    static_configs:
-      - targets: ['$(hostname -I | awk '{print $1}'):9221']
-EOF
 }
 
 main() {
