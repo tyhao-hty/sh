@@ -23,7 +23,7 @@ err()  { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 step() {
   echo
-  echo -e "${BLUE}========== $* ========== ${NC}"
+  echo -e "${BLUE}========== $* ==========${NC}"
 }
 
 on_error() {
@@ -46,12 +46,6 @@ require_root() {
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
-}
-
-file_contains_exact() {
-  local file="$1"
-  local text="$2"
-  [[ -f "$file" ]] && grep -Fqx "$text" "$file"
 }
 
 check_os() {
@@ -102,12 +96,11 @@ install_exporter() {
   step "安装 prometheus-pve-exporter"
 
   if [[ -x "${VENV_DIR}/bin/pve_exporter" ]]; then
-    log "检测到 pve_exporter 已存在，先检查是否可用。"
     if "${VENV_DIR}/bin/pve_exporter" --help >/dev/null 2>&1; then
       log "现有 pve_exporter 可正常运行，跳过重复安装。"
       return
     else
-      warn "现有 pve_exporter 不可用，将执行升级安装。"
+      warn "现有 pve_exporter 不可用，将重新安装。"
     fi
   fi
 
@@ -129,17 +122,6 @@ verify_binary() {
   log "版本/帮助信息预检完成。"
 }
 
-pve_user_exists() {
-  pveum user list 2>/dev/null | awk -v u="${PVE_USER}" 'NR>1 && $1==u {found=1} END{exit !found}'
-}
-
-pve_acl_exists() {
-  pveum acl list 2>/dev/null | awk -v u="${PVE_USER}" -v r="${PVE_ROLE}" '
-    NR>1 && $1=="/" && $2==u && $3==r {found=1}
-    END{exit !found}
-  '
-}
-
 ensure_pve_user_and_acl() {
   step "PVE 用户与权限检查/创建"
 
@@ -149,27 +131,45 @@ ensure_pve_user_and_acl() {
     return
   fi
 
-  if pve_user_exists; then
-    log "PVE 用户已存在：${PVE_USER}，跳过创建。"
-  else
-    log "创建 PVE 用户：${PVE_USER}"
-    pveum user add "${PVE_USER}" --password "${PVE_PASSWORD}"
-    log "PVE 用户已创建。"
-  fi
+  local user_add_err=""
+  local acl_add_err=""
+  local tmp_err=""
 
-  if pve_acl_exists; then
+  tmp_err="$(mktemp)"
+  if pveum user add "${PVE_USER}" --password "${PVE_PASSWORD}" 2>"${tmp_err}"; then
+    log "PVE 用户已创建：${PVE_USER}"
+  else
+    user_add_err="$(cat "${tmp_err}")"
+    if echo "${user_add_err}" | grep -qi "already exists"; then
+      log "PVE 用户已存在：${PVE_USER}，跳过创建。"
+    else
+      err "创建 PVE 用户失败：${user_add_err}"
+      rm -f "${tmp_err}"
+      exit 1
+    fi
+  fi
+  rm -f "${tmp_err}"
+
+  if pveum acl list 2>/dev/null | grep -Fq "/ ${PVE_USER} ${PVE_ROLE}"; then
     log "用户 ${PVE_USER} 已具备 / 路径 ${PVE_ROLE} 权限，跳过授权。"
   else
-    log "授予 ${PVE_USER} 只读角色：${PVE_ROLE}"
-    pveum aclmod / -user "${PVE_USER}" -role "${PVE_ROLE}"
-    log "权限授予完成。"
+    tmp_err="$(mktemp)"
+    if pveum aclmod / -user "${PVE_USER}" -role "${PVE_ROLE}" 2>"${tmp_err}"; then
+      log "已授予 ${PVE_USER} 角色 ${PVE_ROLE}。"
+    else
+      acl_add_err="$(cat "${tmp_err}")"
+      err "授予 ACL 权限失败：${acl_add_err}"
+      rm -f "${tmp_err}"
+      exit 1
+    fi
+    rm -f "${tmp_err}"
   fi
 
   log "当前用户信息："
-  pveum user list | awk -v u="${PVE_USER}" 'NR==1 || $1==u'
+  pveum user list | grep -F "${PVE_USER}" || true
 
   log "当前 ACL 条目："
-  pveum acl list | awk -v u="${PVE_USER}" 'NR==1 || $2==u'
+  pveum acl list | grep -F "${PVE_USER}" || true
 }
 
 write_config() {
@@ -186,17 +186,11 @@ default:
     verify_ssl: false
 EOF
 
-  if [[ -f "${CONFIG_FILE}" ]]; then
-    if cmp -s "${tmpfile}" "${CONFIG_FILE}"; then
-      log "配置文件已存在且内容一致，跳过写入：${CONFIG_FILE}"
-      rm -f "${tmpfile}"
-      chmod 600 "${CONFIG_FILE}"
-      return
-    else
-      warn "配置文件已存在但内容不同，将覆盖：${CONFIG_FILE}"
-    fi
-  else
-    log "配置文件不存在，将创建：${CONFIG_FILE}"
+  if [[ -f "${CONFIG_FILE}" ]] && cmp -s "${tmpfile}" "${CONFIG_FILE}"; then
+    log "配置文件已存在且内容一致，跳过写入：${CONFIG_FILE}"
+    rm -f "${tmpfile}"
+    chmod 600 "${CONFIG_FILE}"
+    return
   fi
 
   mv "${tmpfile}" "${CONFIG_FILE}"
@@ -227,16 +221,10 @@ ExecStart=${VENV_DIR}/bin/pve_exporter --config.file ${CONFIG_FILE}
 WantedBy=multi-user.target
 EOF
 
-  if [[ -f "${SERVICE_FILE}" ]]; then
-    if cmp -s "${tmpfile}" "${SERVICE_FILE}"; then
-      log "systemd 服务文件已存在且内容一致，跳过写入。"
-      rm -f "${tmpfile}"
-      return
-    else
-      warn "systemd 服务文件已存在但内容不同，将覆盖。"
-    fi
-  else
-    log "systemd 服务文件不存在，将创建。"
+  if [[ -f "${SERVICE_FILE}" ]] && cmp -s "${tmpfile}" "${SERVICE_FILE}"; then
+    log "systemd 服务文件已存在且内容一致，跳过写入。"
+    rm -f "${tmpfile}"
+    return
   fi
 
   mv "${tmpfile}" "${SERVICE_FILE}"
@@ -249,14 +237,14 @@ reload_enable_start_service() {
   systemctl daemon-reload
 
   if systemctl is-enabled "${APP_NAME}" >/dev/null 2>&1; then
-    log "服务已设置为开机自启。"
+    log "服务已设置为开机自启，跳过 enable。"
   else
     systemctl enable "${APP_NAME}"
     log "已设置服务开机自启。"
   fi
 
   if systemctl is-active --quiet "${APP_NAME}"; then
-    log "服务当前已在运行，执行重启以应用最新配置。"
+    log "服务当前已在运行，重启以应用最新配置。"
     systemctl restart "${APP_NAME}"
   else
     log "服务当前未运行，启动服务。"
@@ -266,9 +254,9 @@ reload_enable_start_service() {
   sleep 2
 
   if systemctl is-active --quiet "${APP_NAME}"; then
-    log "服务已成功运行：${APP_NAME}"
+    log "服务运行正常：${APP_NAME}"
   else
-    err "服务未成功启动。"
+    err "服务启动失败。"
     systemctl status "${APP_NAME}" --no-pager -l || true
     journalctl -u "${APP_NAME}" -n 100 --no-pager || true
     exit 1
@@ -289,8 +277,6 @@ post_checks() {
   echo "----- 端口监听检查 -----"
   if command_exists ss; then
     ss -lntp | grep -E 'pve_exporter|:9221' || warn "未明确看到 9221 监听，请结合日志判断。"
-  else
-    warn "系统中没有 ss，跳过端口检查。"
   fi
 
   echo
